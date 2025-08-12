@@ -44,6 +44,7 @@ MAX_TOKENS = int(os.getenv("MAX_TOKENS", "250"))
 MAX_STEPS  = int(os.getenv("MAX_STEPS", "6"))
 STEP_SLEEP = float(os.getenv("STEP_SLEEP_SEC", "1.2"))
 DRY_RUN    = os.getenv("DRY_RUN", "0") == "1"
+COMMAND_LOG_PATH = os.getenv("AGENT_COMMAND_LOG", "agent_commands.json")
 
 HEADERS = {
     "Content-Type": "application/json",
@@ -235,6 +236,7 @@ def main():
     history: List[Dict[str, Any]] = []  # только текст, без картинок
     last_click: Optional[Tuple[int, int]] = None
     repeat_clicks = 0
+    executed_commands: List[Dict[str, Any]] = []
 
     try:
         for step in range(1, MAX_STEPS + 1):
@@ -249,7 +251,7 @@ def main():
             coords, reason, done = parse_action(llm_text, screen_size)
             if done:
                 print(f"[AGENT] Готово: {reason}")
-                return
+                break
 
             if coords is None:
                 print(f"[AGENT] Ошибка разбора/валидации: {reason}")
@@ -264,21 +266,32 @@ def main():
             last_click = coords
             if repeat_clicks >= 2:
                 print("[AGENT] Координаты трижды повторяются — вероятна петля. Останавливаюсь.")
-                return
+                break
 
             print(f"[AGENT] Кликаю по {coords}. Причина: {reason}")
             do_click(coords)
 
+            executed_commands.append({"step": step, "x": coords[0], "y": coords[1], "reason": reason})
+
             history.append({"role": "assistant", "content": f"Кликнул по {coords}. {('Причина: ' + reason) if reason else ''}"})
             time.sleep(STEP_SLEEP)
 
-        print("[AGENT] Достигнут лимит шагов, выхожу.")
+        else:
+            print("[AGENT] Достигнут лимит шагов, выхожу.")
     except pyautogui.FailSafeException:
         print("[AGENT] Аварийная остановка (курсор в левом верхнем углу).")
     except KeyboardInterrupt:
         print("[AGENT] Прервано пользователем.")
     except Exception as e:
         print(f"[AGENT] Ошибка: {e}\n{traceback.format_exc()}")
+    finally:
+        if executed_commands:
+            try:
+                with open(COMMAND_LOG_PATH, "w", encoding="utf-8") as f:
+                    json.dump(executed_commands, f, ensure_ascii=False, indent=2)
+                print(f"[AGENT] Лог команд сохранён в {COMMAND_LOG_PATH}")
+            except Exception as e:
+                print(f"[AGENT] Не удалось сохранить лог команд: {e}")
 
 if __name__ == "__main__":
     main()
