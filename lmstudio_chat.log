@@ -1,0 +1,31 @@
+2025-08-12 16:40:13,573 | INFO | POST http://192.168.100.8:1234/v1/chat/completions model=google/gemma-3-12b
+2025-08-12 16:53:14,664 | INFO | POST http://192.168.100.8:1234/v1/chat/completions model=google/gemma-3-12b
+2025-08-12 16:53:19,719 | INFO | Launched UI agent with goal: усыпить компьютер
+2025-08-12 16:55:53,735 | INFO | POST http://192.168.100.8:1234/v1/chat/completions model=google/gemma-3-12b
+2025-08-12 16:55:57,646 | INFO | Launched UI agent with goal: усыпить компьютер
+2025-08-12 17:01:34,292 | INFO | POST http://192.168.100.8:1234/v1/chat/completions model=google/gemma-3-12b
+2025-08-12 17:01:45,074 | INFO | Launched UI agent with goal: усыпить компьютер
+2025-08-12 17:05:26,977 | INFO | POST http://192.168.100.8:1234/v1/chat/completions model=google/gemma-3-12b
+2025-08-12 17:05:37,689 | INFO | Launched UI agent with goal: усыпить компьютер
+2025-08-12 17:18:06,457 | INFO | POST http://192.168.100.8:1234/v1/chat/completions model=Qwen/Qwen2.5-VL-7B-Instruct-Q4_K_M
+2025-08-12 17:18:10,210 | ERROR | HTTP error: 400 Client Error: Bad Request for url: http://192.168.100.8:1234/v1/chat/completions
+Traceback (most recent call last):
+  File "c:\Users\User\Desktop 2\JarvisPy\chat_cli.py", line 179, in _handle_llm_turn
+    answer = call_llm(API_URL, payload)
+  File "c:\Users\User\Desktop 2\JarvisPy\chat_cli.py", line 111, in call_llm
+    r.raise_for_status()
+    ~~~~~~~~~~~~~~~~~~^^
+  File "C:\Users\User\Desktop 2\JarvisPy\.venv\Lib\site-packages\requests\models.py", line 1026, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 400 Client Error: Bad Request for url: http://192.168.100.8:1234/v1/chat/completions
+2025-08-12 17:19:16,226 | INFO | POST http://192.168.100.8:1234/v1/chat/completions model=Qwen/Qwen2.5-VL-7B-Instruct-Q4_K_M
+2025-08-12 17:19:19,126 | ERROR | HTTP error: 400 Client Error: Bad Request for url: http://192.168.100.8:1234/v1/chat/completions
+Traceback (most recent call last):
+  File "c:\Users\User\Desktop 2\JarvisPy\chat_cli.py", line 179, in _handle_llm_turn
+    answer = call_llm(API_URL, payload)
+  File "c:\Users\User\Desktop 2\JarvisPy\chat_cli.py", line 111, in call_llm
+    r.raise_for_status()
+    ~~~~~~~~~~~~~~~~~~^^
+  File "C:\Users\User\Desktop 2\JarvisPy\.venv\Lib\site-packages\requests\models.py", line 1026, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 400 Client Error: Bad Request for url: http://192.168.100.8:1234/v1/chat/completions
