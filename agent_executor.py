@@ -106,8 +106,11 @@ if sys.platform.startswith("win"):
 """
 
 # ----------------- ВСПОМОГАТЕЛЬНОЕ -----------------
-def b64_png_from_screenshot(image: Image.Image) -> str:
-    """Даунскейлим до 1280px по ширине, чтобы data URL был короче."""
+def b64_png_from_screenshot(image: Image.Image) -> Tuple[str, Tuple[int, int]]:
+    """Даунскейлим до 1280px по ширине, чтобы data URL был короче.
+
+    Возвращает base64 PNG и фактический размер использованного изображения.
+    """
     max_w = 1280
     w, h = image.size
     if w > max_w:
@@ -115,11 +118,12 @@ def b64_png_from_screenshot(image: Image.Image) -> str:
         image = image.resize((max_w, new_h), Image.LANCZOS)
     buf = io.BytesIO()
     image.save(buf, format="PNG", optimize=True)
-    return base64.b64encode(buf.getvalue()).decode("ascii")
+    b64 = base64.b64encode(buf.getvalue()).decode("ascii")
+    return b64, image.size
 
-def make_screenshot() -> Tuple[Image.Image, Tuple[int, int]]:
-    img = pyautogui.screenshot()
-    return img, img.size
+def make_screenshot() -> Image.Image:
+    """Делаем скриншот активного экрана."""
+    return pyautogui.screenshot()
 
 def sanitize_json(s: str) -> str:
     s = s.strip()
@@ -127,8 +131,14 @@ def sanitize_json(s: str) -> str:
         s = s.strip("`")
         s = re.sub(r'^\s*(json|JSON)\s*\n', '', s.strip())
     m1 = s.find("{"); m2 = s.rfind("}")
-    if m1 != -1 and m2 != -1 and m2 > m1:
-        s = s[m1:m2+1]
+    if m1 != -1:
+        if m2 != -1 and m2 > m1:
+            s = s[m1:m2+1]
+        else:
+            s = s[m1:]
+    opens = s.count("{"); closes = s.count("}")
+    if closes < opens:
+        s += "}" * (opens - closes)
     return " ".join(s.splitlines())
 
 def to_vision_history(parts: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -188,7 +198,7 @@ def call_llm_with_image(goal: str, screenshot_b64: str, history: List[Dict[str, 
         text = str(content)
     return text.strip()
 
-def parse_action(text: str, screen_size: Tuple[int, int]) -> Tuple[Optional[Tuple[int, int]], Optional[str], bool]:
+def parse_action(text: str, img_size: Tuple[int, int]) -> Tuple[Optional[Tuple[int, int]], Optional[str], bool]:
     text = sanitize_json(text)
     if not JSON_CLICK_RE.match(text):
         return None, "Ответ не похож на ожидаемый JSON", False
@@ -208,9 +218,9 @@ def parse_action(text: str, screen_size: Tuple[int, int]) -> Tuple[Optional[Tupl
     if not (isinstance(x, int) and isinstance(y, int)):
         return None, "Координаты неполные/нецелые", False
 
-    w, h = screen_size
+    w, h = img_size
     if not (0 <= x < w and 0 <= y < h):
-        return None, f"Координаты вне экрана ({w}x{h})", False
+        return None, f"Координаты вне изображения ({w}x{h})", False
 
     reason = data.get("reason") or ""
     return (x, y), reason, False
@@ -241,14 +251,17 @@ def main():
     try:
         for step in range(1, MAX_STEPS + 1):
             print(f"\n[AGENT] Шаг {step}/{MAX_STEPS}: делаю скрин...")
-            img, screen_size = make_screenshot()
-            b64 = b64_png_from_screenshot(img)
+            img = make_screenshot()
+            display_size = pyautogui.size()
+            b64, resized_size = b64_png_from_screenshot(img)
+            scale_x = display_size[0] / resized_size[0]
+            scale_y = display_size[1] / resized_size[1]
 
             print("[AGENT] Запрашиваю LLM решение (ожидаю строго JSON)...")
             llm_text = call_llm_with_image(goal, b64, history)
             print(f"[LLM RAW]: {llm_text[:500]}{'...' if len(llm_text)>500 else ''}")
 
-            coords, reason, done = parse_action(llm_text, screen_size)
+            coords, reason, done = parse_action(llm_text, resized_size)
             if done:
                 print(f"[AGENT] Готово: {reason}")
                 break
@@ -259,21 +272,23 @@ def main():
                 time.sleep(0.6)
                 continue
 
-            if last_click == coords:
+            scaled_coords = (int(coords[0] * scale_x), int(coords[1] * scale_y))
+
+            if last_click == scaled_coords:
                 repeat_clicks += 1
             else:
                 repeat_clicks = 0
-            last_click = coords
+            last_click = scaled_coords
             if repeat_clicks >= 2:
                 print("[AGENT] Координаты трижды повторяются — вероятна петля. Останавливаюсь.")
                 break
 
-            print(f"[AGENT] Кликаю по {coords}. Причина: {reason}")
-            do_click(coords)
+            print(f"[AGENT] Кликаю по {scaled_coords}. Причина: {reason}")
+            do_click(scaled_coords)
 
-            executed_commands.append({"step": step, "x": coords[0], "y": coords[1], "reason": reason})
+            executed_commands.append({"step": step, "x": scaled_coords[0], "y": scaled_coords[1], "reason": reason})
 
-            history.append({"role": "assistant", "content": f"Кликнул по {coords}. {('Причина: ' + reason) if reason else ''}"})
+            history.append({"role": "assistant", "content": f"Кликнул по {scaled_coords}. {('Причина: ' + reason) if reason else ''}"})
             time.sleep(STEP_SLEEP)
 
         else:
