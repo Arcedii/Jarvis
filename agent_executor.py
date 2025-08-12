@@ -106,8 +106,14 @@ if sys.platform.startswith("win"):
 """
 
 # ----------------- ВСПОМОГАТЕЛЬНОЕ -----------------
-def b64_png_from_screenshot(image: Image.Image) -> str:
-    """Даунскейлим до 1280px по ширине, чтобы data URL был короче."""
+def b64_png_from_screenshot(image: Image.Image) -> Tuple[str, Tuple[int, int]]:
+    """Возвращает base64 PNG и фактический размер изображения.
+
+    Скриншот даунскейлится до 1280px по ширине, чтобы data URL был короче.
+    Размер (width, height) возвращается после возможного уменьшения, чтобы
+    пересчитывать координаты из пространства уменьшенного изображения в
+    реальные координаты экрана.
+    """
     max_w = 1280
     w, h = image.size
     if w > max_w:
@@ -115,7 +121,8 @@ def b64_png_from_screenshot(image: Image.Image) -> str:
         image = image.resize((max_w, new_h), Image.LANCZOS)
     buf = io.BytesIO()
     image.save(buf, format="PNG", optimize=True)
-    return base64.b64encode(buf.getvalue()).decode("ascii")
+    b64 = base64.b64encode(buf.getvalue()).decode("ascii")
+    return b64, image.size
 
 def make_screenshot() -> Tuple[Image.Image, Tuple[int, int]]:
     img = pyautogui.screenshot()
@@ -242,13 +249,13 @@ def main():
         for step in range(1, MAX_STEPS + 1):
             print(f"\n[AGENT] Шаг {step}/{MAX_STEPS}: делаю скрин...")
             img, screen_size = make_screenshot()
-            b64 = b64_png_from_screenshot(img)
+            b64, scaled_size = b64_png_from_screenshot(img)
 
             print("[AGENT] Запрашиваю LLM решение (ожидаю строго JSON)...")
             llm_text = call_llm_with_image(goal, b64, history)
             print(f"[LLM RAW]: {llm_text[:500]}{'...' if len(llm_text)>500 else ''}")
 
-            coords, reason, done = parse_action(llm_text, screen_size)
+            coords, reason, done = parse_action(llm_text, scaled_size)
             if done:
                 print(f"[AGENT] Готово: {reason}")
                 break
@@ -259,21 +266,33 @@ def main():
                 time.sleep(0.6)
                 continue
 
-            if last_click == coords:
+            # Пересчитываем координаты из пространства уменьшенного изображения в
+            # реальные координаты экрана
+            scale_x = screen_size[0] / float(scaled_size[0])
+            scale_y = screen_size[1] / float(scaled_size[1])
+            actual_coords = (
+                min(screen_size[0] - 1, int(coords[0] * scale_x)),
+                min(screen_size[1] - 1, int(coords[1] * scale_y)),
+            )
+
+            if last_click == actual_coords:
                 repeat_clicks += 1
             else:
                 repeat_clicks = 0
-            last_click = coords
+            last_click = actual_coords
             if repeat_clicks >= 2:
                 print("[AGENT] Координаты трижды повторяются — вероятна петля. Останавливаюсь.")
                 break
 
-            print(f"[AGENT] Кликаю по {coords}. Причина: {reason}")
-            do_click(coords)
+            print(f"[AGENT] Кликаю по {actual_coords}. Причина: {reason}")
+            do_click(actual_coords)
 
-            executed_commands.append({"step": step, "x": coords[0], "y": coords[1], "reason": reason})
+            executed_commands.append({"step": step, "x": actual_coords[0], "y": actual_coords[1], "reason": reason})
 
-            history.append({"role": "assistant", "content": f"Кликнул по {coords}. {('Причина: ' + reason) if reason else ''}"})
+            history.append({
+                "role": "assistant",
+                "content": f"Кликнул по {actual_coords}. {('Причина: ' + reason) if reason else ''}"
+            })
             time.sleep(STEP_SLEEP)
 
         else:
