@@ -6,6 +6,8 @@ import time
 from dataclasses import dataclass, asdict
 from datetime import datetime
 from typing import List, Union
+from Agent_PC import AgentPC
+
 
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
@@ -402,6 +404,12 @@ class JarvisClientApp(tk.Tk):
             r = requests.post(self.cfg.api_url, json=payload, timeout=120)
             r.raise_for_status()
             data = r.json()
+
+            invoke_agent = data.get("invoke_agent", False)
+            if invoke_agent:
+              user_text = req_messages[-1]["content"]
+              agent = AgentPC(api_url=self.cfg.api_url, model=self.cfg.model)
+              agent.perform_task(user_text)
 
             content = data.get("choices", [{}])[0].get("message", {}).get("content", "")
             lat = time.time() - t0
