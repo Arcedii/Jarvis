@@ -6,13 +6,14 @@ import time
 from dataclasses import dataclass, asdict
 from datetime import datetime
 from typing import List, Union
-from Agent_PC import AgentPC
+
 
 
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 
 import requests
+from Agent_PC import AgentPC
 
 # ===================== Константы и настройки по умолчанию ===================== #
 DEFAULT_API_URL = "http://192.168.100.8:1234/v1/chat/completions"
@@ -405,20 +406,40 @@ class JarvisClientApp(tk.Tk):
             r.raise_for_status()
             data = r.json()
 
-            invoke_agent = data.get("invoke_agent", False)
-            if invoke_agent:
-              user_text = req_messages[-1]["content"]
-              agent = AgentPC(api_url=self.cfg.api_url, model=self.cfg.model)
-              agent.perform_task(user_text)
+            # Получаем контент (модель может вернуть либо текст, либо JSON-строку)
+            raw_content = data.get("choices", [{}])[0].get("message", {}).get("content", "")
 
-            content = data.get("choices", [{}])[0].get("message", {}).get("content", "")
+            # По умолчанию не вызываем агент
+            invoke_agent = False
+
+            # 1) Проверяем, не вернул ли сервис флаг invoke_agent в корне JSON
+            invoke_agent = data.get("invoke_agent", False)
+
+            # 2) Если invoke_agent не найден, проверяем, не вернул ли модель JSON-строку
+            #    вида {"invoke_agent": true} в поле content
+            if not invoke_agent:
+                try:
+                    parsed = json.loads(raw_content)
+                    invoke_agent = parsed.get("invoke_agent", False)
+                except (TypeError, json.JSONDecodeError):
+                    pass
+
+            # Если требуется вызвать агент, вызываем его и не выводим текст от модели
+            if invoke_agent:
+                user_text = req_messages[-1]["content"]
+                agent = AgentPC(api_url=self.cfg.api_url, model=self.cfg.model)
+                agent.perform_task(user_text)
+                content = ""  # текстовое сообщение от модели в чат не выводим
+            else:
+                content = raw_content  # обычный текст от модели
+
             lat = time.time() - t0
             self.resp_queue.put({"ok": True, "text": content, "latency": lat})
         except Exception as e:
             self.resp_queue.put({"ok": False, "error": str(e)})
         finally:
-            # Вернуть управление в главный поток для апдейта UI
             self.after(10, self._apply_response)
+
 
     def _apply_response(self):
         try:

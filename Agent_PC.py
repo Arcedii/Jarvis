@@ -27,14 +27,21 @@ class AgentPC:
         )
         messages = [
             {"role": "system", "content": system_prompt},
-            {"role": "user", "content": prompt},
-            # В большинстве мультимодальных моделей изображение передаётся в виде отдельного поля.
-            {"role": "user", "image": image_b64}
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": prompt},
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": f"data:image/png;base64,{image_b64}"}
+                    }
+                ]
+            }
         ]
         payload = {
             "model": self.model,
             "messages": messages,
-            "temperature": self.temperature
+            "temperature": float(self.temperature),
         }
         response = requests.post(self.api_url, json=payload, timeout=30)
         data = response.json()
