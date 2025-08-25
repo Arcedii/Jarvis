@@ -121,9 +121,9 @@ def b64_png_from_screenshot(image: Image.Image) -> Tuple[str, Tuple[int, int]]:
     b64 = base64.b64encode(buf.getvalue()).decode("ascii")
     return b64, image.size
 
-def make_screenshot() -> Tuple[Image.Image, Tuple[int, int]]:
-    img = pyautogui.screenshot()
-    return img, img.size
+def make_screenshot() -> Image.Image:
+    """Делаем скриншот активного экрана."""
+    return pyautogui.screenshot()
 
 def sanitize_json(s: str) -> str:
     s = s.strip()
@@ -131,8 +131,14 @@ def sanitize_json(s: str) -> str:
         s = s.strip("`")
         s = re.sub(r'^\s*(json|JSON)\s*\n', '', s.strip())
     m1 = s.find("{"); m2 = s.rfind("}")
-    if m1 != -1 and m2 != -1 and m2 > m1:
-        s = s[m1:m2+1]
+    if m1 != -1:
+        if m2 != -1 and m2 > m1:
+            s = s[m1:m2+1]
+        else:
+            s = s[m1:]
+    opens = s.count("{"); closes = s.count("}")
+    if closes < opens:
+        s += "}" * (opens - closes)
     return " ".join(s.splitlines())
 
 def to_vision_history(parts: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -245,10 +251,6 @@ def main():
     try:
         for step in range(1, MAX_STEPS + 1):
             print(f"\n[AGENT] Шаг {step}/{MAX_STEPS}: делаю скрин...")
-            img, screen_size = make_screenshot()
-            b64, resized_size = b64_png_from_screenshot(img)
-            scale_x = screen_size[0] / resized_size[0]
-            scale_y = screen_size[1] / resized_size[1]
 
             print("[AGENT] Запрашиваю LLM решение (ожидаю строго JSON)...")
             llm_text = call_llm_with_image(goal, b64, history)
