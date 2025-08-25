@@ -1,307 +1,167 @@
+#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-agent_executor.py — GUI-агент для Qwen-VL (один шаг = один клик)
+simplified_agent_executor.py — упрощённый агент для взаимодействия с Qwen‑VL.
 
-Шаги:
-1) Скриншот экрана.
-2) Отправка в LLM (Qwen-VL через LM Studio OpenAI-compatible) цели + скрина.
-3) Ждём СТРОГО JSON:
-   {"click":{"x":int,"y":int},"reason":"..."}  или  {"done":true,"reason":"..."}
-4) Кликаем, ждём, повторяем до успеха или лимита шагов.
+На каждом шаге скрипт делает скриншот, уменьшает его до 1280px по ширине,
+отправляет изображение и цель в LLM и ожидает JSON-ответ либо с координатами
+клика, либо с признаком завершения. Координаты, полученные от модели,
+масштабируются на размер исходного экрана и используются для клика.
 
-Запуск:
-  python agent_executor.py "усыпить компьютер"
-
-ENV:
-  LMSTUDIO_API_URL  (default: http://192.168.100.8:1234/v1/chat/completions)
-  LMSTUDIO_MODEL    (default: Qwen/Qwen2.5-VL-7B-Instruct)
-  TEMPERATURE       (default: 0.1)
-  MAX_TOKENS        (default: 250)
-  MAX_STEPS         (default: 6)
-  STEP_SLEEP_SEC    (default: 1.2)
-  DRY_RUN           (default: "0")   # "1" = не кликать, только лог
+Код оставляет только необходимые функции и минимальные проверки, чтобы
+облегчить чтение и понимание.
 """
 
 import os
 import sys
-import time
 import json
 import base64
 import io
-import re
-import traceback
-from typing import Tuple, Optional, List, Dict, Any
+import time
+from typing import Tuple, Optional, List, Dict
 
 import requests
 import pyautogui
 from PIL import Image
 
-# ---- Конфиг из env ----
-API_URL    = os.getenv("LMSTUDIO_API_URL", "http://192.168.100.8:1234/v1/chat/completions")
-MODEL      = os.getenv("LMSTUDIO_MODEL", "Qwen/Qwen2.5-VL-7B-Instruct")
-TEMP       = float(os.getenv("TEMPERATURE", "0.1"))
-MAX_TOKENS = int(os.getenv("MAX_TOKENS", "250"))
-MAX_STEPS  = int(os.getenv("MAX_STEPS", "6"))
-STEP_SLEEP = float(os.getenv("STEP_SLEEP_SEC", "1.2"))
-DRY_RUN    = os.getenv("DRY_RUN", "0") == "1"
-COMMAND_LOG_PATH = os.getenv("AGENT_COMMAND_LOG", "agent_commands.json")
-
+# ---- Конфигурация ----
+API_URL = os.getenv("LMSTUDIO_API_URL", "http://localhost:1234/v1/chat/completions")
+MODEL   = os.getenv("LMSTUDIO_MODEL", "Qwen/Qwen2.5-VL-7B-Instruct")
+TEMP    = float(os.getenv("TEMPERATURE", "0.1"))
+MAX_STEPS = int(os.getenv("MAX_STEPS", "6"))
 HEADERS = {
     "Content-Type": "application/json",
-    "Authorization": "Bearer lm-studio",  # для LM Studio это ок
+    "Authorization": os.getenv("LMSTUDIO_API_KEY", "Bearer lm-studio"),
 }
 
-# ---- Безопасность pyautogui ----
-pyautogui.FAILSAFE = True  # левый верхний угол = аварийная остановка
-pyautogui.PAUSE = 0.1
+pyautogui.FAILSAFE = True
 
-# ---- Валидатор JSON-ответа ----
-JSON_CLICK_RE = re.compile(
-    r'^\s*\{\s*(?:"done"\s*:\s*true|"(?:click|done)"\s*:)', re.IGNORECASE | re.DOTALL
+# ---- Промпты ----
+# Системный промпт объясняет модели правила: один клик за шаг или завершение.
+SYSTEM_PROMPT = (
+    "Ты — честный и строгий UI-навигационный ассистент. "
+    "Твоя задача: вести пользователя к цели пошагово, по одному клику за шаг. "
+    "На каждом шаге возвращай строго JSON: либо {\"click\":{\"x\":INT,\"y\":INT},\"reason\":\"...\"}, "
+    "либо {\"done\":true,\"reason\":\"...\"}. "
+    "Никаких клавиш, двойных кликов или перетаскиваний."
 )
 
-SYSTEM_PROMPT = """Ты — честный и строгий UI-навигационный ассистент.
-Твоя задача: вести пользователя к цели ПОШАГОВО, по одному клику за шаг.
+# Шаблон пользовательского сообщения: цель и инструкция
+USER_TEMPLATE = (
+    "ЦЕЛЬ: {goal}\n\n"
+    "Ты видишь скриншот. Выбери одну из двух опций:\n"
+    "- {\"click\":{\"x\":INT,\"y\":INT},\"reason\":\"...\"}\n"
+    "- {\"done\":true,\"reason\":\"...\"}"
+)
 
-ПРАВИЛА:
-1) На КАЖДОМ шаге отвечай СТРОГО одним JSON без лишнего текста:
-   Вариант A (сказать клик):
-     {"click":{"x":123,"y":456},"reason":"короткое объяснение на русском"}
-   Вариант B (цель достигнута / дальше кликов не надо):
-     {"done":true,"reason":"короткое объяснение на русском"}
 
-2) НИКАКИХ клавиш, двойных кликов, перетаскиваний — ТОЛЬКО один одиночный ЛЕВЫЙ клик за шаг.
-3) Координаты — абсолютные пиксели активного дисплея, в пределах [0..width) и [0..height).
-4) Если клик неочевиден — верни {"done":true,...} с объяснением.
-5) Видишь только текущий скриншот. История ниже — только текстовая.
-6) Будь консервативен: избегай кликов по перезагрузке/выключению, если цель достигается безопаснее.
-7) reason — коротко и по делу, по-русски.
+def screenshot_and_downscale(max_width: int = 1280) -> Tuple[str, Tuple[int, int], Tuple[int, int]]:
+    """Делает скриншот, уменьшает до max_width и возвращает base64 и размеры.
 
-ОТВЕЧАЙ ТОЛЬКО В УКАЗАННОМ JSON-ФОРМАТЕ.
-"""
-
-USER_PROMPT_TEMPLATE = """ЦЕЛЬ: {goal}
-
-Контекст:
-- ОС: Windows/macOS/Linux, разрешение/масштаб неизвестны.
-- Разрешено: только ОДИН ЛЕВЫЙ клик за шаг.
-- Скриншот ниже.
-
-Верни СТРОГО один JSON:
-- Либо {{"click":{{"x":INT,"y":INT}},"reason":"..."}}
-- Либо {{"done":true,"reason":"..."}}
-
-Без другого текста, без форматирования, без кода.
-Если целесообразно — начни с системной кнопки/меню, ведущих к цели.
-"""
-
-# --- спец-подсказка для Windows цели "Сон" (не обязательно) ---
-if sys.platform.startswith("win"):
-    SYSTEM_PROMPT += """
-СПЕЦИАЛЬНО ДЛЯ WINDOWS:
-- Если цель — усыпить компьютер, предпочтительный маршрут:
-  1) Клик по кнопке «Пуск» (значок Windows).
-  2) Клик по кнопке «Питание».
-  3) Клик по пункту «Сон».
-"""
-
-# ----------------- ВСПОМОГАТЕЛЬНОЕ -----------------
-def b64_png_from_screenshot(image: Image.Image) -> Tuple[str, Tuple[int, int]]:
-    """Даунскейлим до 1280px по ширине, чтобы data URL был короче.
-
-    Возвращает base64 PNG и фактический размер использованного изображения.
+    :param max_width: максимальная ширина уменьшенного изображения
+    :returns: base64 PNG, размер уменьшенного изображения (w,h), размер исходного скрина (w,h)
     """
-    max_w = 1280
-    w, h = image.size
-    if w > max_w:
-        new_h = int(h * (max_w / float(w)))
-        image = image.resize((max_w, new_h), Image.LANCZOS)
+    img = pyautogui.screenshot()
+    full_w, full_h = img.size
+    if full_w > max_width:
+        new_h = int(full_h * (max_width / float(full_w)))
+        img = img.resize((max_width, new_h), Image.LANCZOS)
+    res_w, res_h = img.size
     buf = io.BytesIO()
-    image.save(buf, format="PNG", optimize=True)
-    b64 = base64.b64encode(buf.getvalue()).decode("ascii")
-    return b64, image.size
+    img.save(buf, format="PNG")
+    b64 = base64.b64encode(buf.getvalue()).decode()
+    return b64, (res_w, res_h), (full_w, full_h)
 
-def make_screenshot() -> Image.Image:
-    """Делаем скриншот активного экрана."""
-    return pyautogui.screenshot()
 
-def sanitize_json(s: str) -> str:
-    s = s.strip()
-    if s.startswith("```"):
-        s = s.strip("`")
-        s = re.sub(r'^\s*(json|JSON)\s*\n', '', s.strip())
-    m1 = s.find("{"); m2 = s.rfind("}")
-    if m1 != -1:
-        if m2 != -1 and m2 > m1:
-            s = s[m1:m2+1]
-        else:
-            s = s[m1:]
-    opens = s.count("{"); closes = s.count("}")
-    if closes < opens:
-        s += "}" * (opens - closes)
-    return " ".join(s.splitlines())
-
-def to_vision_history(parts: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Преобразуем текстовую историю в формат частей [{type:'text',...}] (без картинок)."""
-    out = []
-    for m in parts:
-        role = m.get("role")
-        content = m.get("content")
-        if isinstance(content, str):
-            out.append({"role": role, "content": [{"type": "text", "text": content}]})
-        else:
-            out.append(m)
-    return out
-
-# ----------------- ВЗАИМОДЕЙСТВИЕ С LLM -----------------
-def call_llm_with_image(goal: str, screenshot_b64: str, history: List[Dict[str, Any]]) -> str:
-    """
-    Для Qwen-VL: отправляем system (строкой), историю (parts: text), и user (parts: text + image_url)
-    """
+def call_llm(goal: str, image_b64: str, history: List[Dict[str, str]]) -> str:
+    """Отправляет запрос в LLM с изображением и возвращает текстовый ответ."""
     user_parts = [
-        {"type": "text", "text": USER_PROMPT_TEMPLATE.format(goal=goal)},
-        {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{screenshot_b64}"}},
+        {"type": "text", "text": USER_TEMPLATE.format(goal=goal)},
+        {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{image_b64}"}},
     ]
-
     payload = {
         "model": MODEL,
         "messages": [
             {"role": "system", "content": SYSTEM_PROMPT},
-            *to_vision_history(history),
+            *history,
             {"role": "user", "content": user_parts},
         ],
         "temperature": TEMP,
-        "max_tokens": MAX_TOKENS,
+        "max_tokens": 100,
     }
+    resp = requests.post(API_URL, json=payload, headers=HEADERS, timeout=120)
+    resp.raise_for_status()
+    data = resp.json()
+    return data["choices"][0]["message"]["content"].strip()
 
-    # 1 повтор при 5xx
-    for attempt in range(2):
-        resp = requests.post(API_URL, json=payload, headers=HEADERS, timeout=120)
-        if resp.status_code >= 500 and attempt == 0:
-            time.sleep(0.8)
-            continue
-        if resp.status_code >= 400:
-            try:
-                print("[LLM ERROR BODY]:", resp.text[:1200])
-            except Exception:
-                pass
-            resp.raise_for_status()
-        break
 
-    j = resp.json()
-    content = (((j.get("choices") or [{}])[0]).get("message") or {}).get("content")
-    if not content:
-        raise RuntimeError("LLM вернул пустой ответ")
-    if isinstance(content, list):
-        text = "".join(p.get("text", "") for p in content if p.get("type") == "text")
-    else:
-        text = str(content)
-    return text.strip()
+def parse_response(text: str, img_size: Tuple[int, int]) -> Tuple[Optional[Tuple[int, int]], str, bool]:
+    """Разбирает текст модели и возвращает координаты, причину и флаг done.
 
-def parse_action(text: str, img_size: Tuple[int, int]) -> Tuple[Optional[Tuple[int, int]], Optional[str], bool]:
-    text = sanitize_json(text)
-    if not JSON_CLICK_RE.match(text):
-        return None, "Ответ не похож на ожидаемый JSON", False
+    :param text: строка от модели (ожидается JSON)
+    :param img_size: размер уменьшенного изображения
+    :returns: ((x,y) или None, reason, done)
+    """
+    # Извлекаем подстроку между { и }
+    s = text.strip()
+    start = s.find("{"); end = s.rfind("}")
+    if start != -1 and end != -1 and end > start:
+        s = s[start:end+1]
     try:
-        data = json.loads(text)
+        data = json.loads(s)
     except Exception:
-        return None, "JSON не распарсился", False
-
-    if isinstance(data, dict) and data.get("done") is True:
-        return None, data.get("reason") or "Готово", True
-
+        return None, "invalid JSON", False
+    # Если завершено
+    if isinstance(data, dict) and data.get("done"):
+        return None, data.get("reason") or "", True
+    # Проверяем click
     click = data.get("click") if isinstance(data, dict) else None
     if not isinstance(click, dict):
-        return None, "Нет объекта 'click'", False
-
+        return None, "missing click", False
     x = click.get("x"); y = click.get("y")
-    if not (isinstance(x, int) and isinstance(y, int)):
-        return None, "Координаты неполные/нецелые", False
-
-    w, h = img_size
-    if not (0 <= x < w and 0 <= y < h):
-        return None, f"Координаты вне изображения ({w}x{h})", False
-
+    res_w, res_h = img_size
+    if not (isinstance(x, int) and isinstance(y, int) and 0 <= x < res_w and 0 <= y < res_h):
+        return None, "invalid coords", False
     reason = data.get("reason") or ""
     return (x, y), reason, False
 
-def do_click(pt: Tuple[int, int]):
-    x, y = pt
-    if DRY_RUN:
-        print(f"[DRY_RUN] клик по ({x},{y})")
-        return
-    pyautogui.moveTo(x, y, duration=0.15)
-    pyautogui.click(x, y)
 
-# ----------------- MAIN LOOP -----------------
-def main():
+def main() -> None:
     if len(sys.argv) < 2:
-        print("Использование: python agent_executor.py \"ваша цель\"")
-        sys.exit(2)
-
-    goal = sys.argv[1].strip()
-    print(f"[AGENT] Цель: {goal}")
-    print(f"[AGENT] API_URL={API_URL} MODEL={MODEL} TEMP={TEMP} MAX_TOKENS={MAX_TOKENS} MAX_STEPS={MAX_STEPS} DRY_RUN={DRY_RUN}")
-
-    history: List[Dict[str, Any]] = []  # только текст, без картинок
+        print("Usage: python simplified_agent_executor.py \"<goal>\"")
+        sys.exit(1)
+    goal = sys.argv[1]
+    history: List[Dict[str, str]] = []
     last_click: Optional[Tuple[int, int]] = None
-    repeat_clicks = 0
-    executed_commands: List[Dict[str, Any]] = []
+    for step in range(1, MAX_STEPS + 1):
+        img_b64, (res_w, res_h), (full_w, full_h) = screenshot_and_downscale()
+        try:
+            resp_text = call_llm(goal, img_b64, history)
+        except Exception as e:
+            print(f"Error calling LLM: {e}")
+            break
+        coords, reason, done = parse_response(resp_text, (res_w, res_h))
+        if done:
+            print("Done:", reason)
+            break
+        if coords is None:
+            # модель прислала некорректный JSON или некорректные координаты
+            history.append({"role": "assistant", "content": f"Ошибка: {reason}. Пришли корректный JSON."})
+            continue
+        # Масштабируем координаты под оригинальный размер экрана
+        x_full = int(coords[0] * (full_w / float(res_w)))
+        y_full = int(coords[1] * (full_h / float(res_h)))
+        if last_click == (x_full, y_full):
+            print("Loop detected. Stopping.")
+            break
+        last_click = (x_full, y_full)
+        print(f"Clicking at {(x_full, y_full)}. Reason: {reason}")
+        if not os.getenv("DRY_RUN", "0") == "1":
+            pyautogui.moveTo(x_full, y_full, duration=0.15)
+            pyautogui.click(x_full, y_full)
+        history.append({"role": "assistant", "content": f"Clicked at {(x_full, y_full)}. {reason}"})
+        time.sleep(0.5)
 
-    try:
-        for step in range(1, MAX_STEPS + 1):
-            print(f"\n[AGENT] Шаг {step}/{MAX_STEPS}: делаю скрин...")
-
-            print("[AGENT] Запрашиваю LLM решение (ожидаю строго JSON)...")
-            llm_text = call_llm_with_image(goal, b64, history)
-            print(f"[LLM RAW]: {llm_text[:500]}{'...' if len(llm_text)>500 else ''}")
-
-            coords, reason, done = parse_action(llm_text, resized_size)
-            if done:
-                print(f"[AGENT] Готово: {reason}")
-                break
-
-            if coords is None:
-                print(f"[AGENT] Ошибка разбора/валидации: {reason}")
-                history.append({"role": "assistant", "content": f"Не распарсил JSON/координаты: {reason}. Дай корректный JSON."})
-                time.sleep(0.6)
-                continue
-
-            scaled_coords = (int(coords[0] * scale_x), int(coords[1] * scale_y))
-
-            if last_click == scaled_coords:
-                repeat_clicks += 1
-            else:
-                repeat_clicks = 0
-            last_click = scaled_coords
-            if repeat_clicks >= 2:
-                print("[AGENT] Координаты трижды повторяются — вероятна петля. Останавливаюсь.")
-                break
-
-            print(f"[AGENT] Кликаю по {scaled_coords}. Причина: {reason}")
-            do_click(scaled_coords)
-
-            executed_commands.append({"step": step, "x": scaled_coords[0], "y": scaled_coords[1], "reason": reason})
-
-            history.append({"role": "assistant", "content": f"Кликнул по {scaled_coords}. {('Причина: ' + reason) if reason else ''}"})
-            time.sleep(STEP_SLEEP)
-
-        else:
-            print("[AGENT] Достигнут лимит шагов, выхожу.")
-    except pyautogui.FailSafeException:
-        print("[AGENT] Аварийная остановка (курсор в левом верхнем углу).")
-    except KeyboardInterrupt:
-        print("[AGENT] Прервано пользователем.")
-    except Exception as e:
-        print(f"[AGENT] Ошибка: {e}\n{traceback.format_exc()}")
-    finally:
-        if executed_commands:
-            try:
-                with open(COMMAND_LOG_PATH, "w", encoding="utf-8") as f:
-                    json.dump(executed_commands, f, ensure_ascii=False, indent=2)
-                print(f"[AGENT] Лог команд сохранён в {COMMAND_LOG_PATH}")
-            except Exception as e:
-                print(f"[AGENT] Не удалось сохранить лог команд: {e}")
 
 if __name__ == "__main__":
     main()
