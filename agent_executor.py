@@ -251,11 +251,6 @@ def main():
     try:
         for step in range(1, MAX_STEPS + 1):
             print(f"\n[AGENT] Шаг {step}/{MAX_STEPS}: делаю скрин...")
-            img = make_screenshot()
-            display_size = pyautogui.size()
-            b64, resized_size = b64_png_from_screenshot(img)
-            scale_x = display_size[0] / resized_size[0]
-            scale_y = display_size[1] / resized_size[1]
 
             print("[AGENT] Запрашиваю LLM решение (ожидаю строго JSON)...")
             llm_text = call_llm_with_image(goal, b64, history)
