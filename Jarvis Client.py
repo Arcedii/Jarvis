@@ -6,8 +6,8 @@ import time
 from dataclasses import dataclass, asdict
 from datetime import datetime
 from typing import List, Union
-
-
+import base64
+import mimetypes
 
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
@@ -17,7 +17,7 @@ from Agent_PC import AgentPC
 
 # ===================== Константы и настройки по умолчанию ===================== #
 DEFAULT_API_URL = "http://192.168.100.8:1234/v1/chat/completions"
-DEFAULT_MODEL = os.getenv("LMSTUDIO_MODEL", "Qwen/Qwen2.5-VL-7B-Instruct")
+DEFAULT_MODEL = "google/gemma-3-12b-it"
 DEFAULT_TEMPERATURE = float(os.getenv("TEMPERATURE", "0.3"))
 CONFIG_PATH = os.path.join(os.path.dirname(__file__), "jarvis_client_config.json")
 HISTORY_PATH = os.path.join(os.path.dirname(__file__), "jarvis_chat_history.json")
@@ -32,9 +32,9 @@ class AppConfig:
         "Ты — Jarvis, вежливый и лаконичный ассистент. Отвечай по делу, на русском,"
         " с примерами, когда это уместно."
     )
+    supports_images: bool = True
 
 # ============================== Утилиты ====================================== #
-
 def load_config() -> AppConfig:
     if os.path.exists(CONFIG_PATH):
         try:
@@ -45,11 +45,9 @@ def load_config() -> AppConfig:
             pass
     return AppConfig()
 
-
 def save_config(cfg: AppConfig) -> None:
     with open(CONFIG_PATH, "w", encoding="utf-8") as f:
         json.dump(asdict(cfg), f, ensure_ascii=False, indent=2)
-
 
 def load_history() -> List[dict]:
     if os.path.exists(HISTORY_PATH):
@@ -60,14 +58,12 @@ def load_history() -> List[dict]:
             pass
     return []
 
-
 def save_history(messages: List[dict]) -> None:
     try:
         with open(HISTORY_PATH, "w", encoding="utf-8") as f:
             json.dump(messages, f, ensure_ascii=False, indent=2)
     except Exception:
         pass
-
 
 # ============================== GUI-приложение =============================== #
 class JarvisClientApp(tk.Tk):
@@ -84,6 +80,11 @@ class JarvisClientApp(tk.Tk):
         self.req_queue: queue.Queue = queue.Queue()
         self.resp_queue: queue.Queue = queue.Queue()
         self._request_thread = None
+
+        # Состояние вложения
+        self.attached_image_b64 = None
+        self.attached_image_mime = None
+        self.attached_image_name = None
 
         # Стили
         self._init_styles()
@@ -106,7 +107,6 @@ class JarvisClientApp(tk.Tk):
     # -------------------------- Построение интерфейса ------------------------- #
     def _init_styles(self):
         style = ttk.Style()
-        # Пробуем тёмную тему, если доступна
         try:
             style.theme_use("clam")
         except tk.TclError:
@@ -155,6 +155,7 @@ class JarvisClientApp(tk.Tk):
         right.pack(side="right")
         ttk.Button(right, text="Настройки", command=self._open_settings).pack(side="right", padx=(6,0))
         ttk.Button(right, text="Сброс", command=self._reset_chat).pack(side="right", padx=(6,6))
+        ttk.Button(right, text="📎 Фото", command=self._attach_image).pack(side="right", padx=(6,6))
 
     def _init_chat_area(self):
         wrap = ttk.Frame(self, style="Card.TFrame")
@@ -177,7 +178,7 @@ class JarvisClientApp(tk.Tk):
         scroll.pack(side="right", fill="y")
         self.chat["yscrollcommand"] = scroll.set
 
-        # Теги для форматирования «пузырей»
+        # Теги для форматирования
         self.chat.tag_configure("user_name", foreground="#9dd6ff", spacing3=4, font=("Segoe UI", 9, "bold"))
         self.chat.tag_configure("user_msg", lmargin1=10, lmargin2=10, spacing1=2, spacing3=10)
         self.chat.tag_configure("asst_name", foreground="#bfa3ff", spacing3=4, font=("Segoe UI", 9, "bold"))
@@ -205,9 +206,9 @@ class JarvisClientApp(tk.Tk):
         if not self.messages:
             self._append_assistant("Привет! Я Jarvis. Подключён к LM Studio по адресу, указанному в настройках. Чем помочь?")
         else:
-            # Восстановим историю в окно
             for m in self.messages:
                 if m.get("role") == "user":
+                    # История хранится как текст — просто покажем
                     self._append_user(m.get("content", ""))
                 elif m.get("role") == "assistant":
                     self._append_assistant(m.get("content", ""))
@@ -233,6 +234,15 @@ class JarvisClientApp(tk.Tk):
         self.chat.configure(state="disabled")
         self.chat.see("end")
 
+    def _append_system(self, text: str):
+        """Небольшое системное сообщение в чат (для отметки вложений и т.п.)."""
+        self.chat.configure(state="normal")
+        ts = datetime.now().strftime("%H:%M:%S")
+        self.chat.insert("end", f"Система  ·  {ts}\n", ("time",))
+        self.chat.insert("end", text.strip() + "\n\n")
+        self.chat.configure(state="disabled")
+        self.chat.see("end")
+
     def _set_status(self, text: str):
         self.status_label.configure(text=text)
         self.update_idletasks()
@@ -254,13 +264,11 @@ class JarvisClientApp(tk.Tk):
         )
         if not path:
             return
-        # Простое текстовое представление
         lines = []
         for m in self.messages:
             role = m.get("role", "?")
             content = m.get("content", "")
             if isinstance(content, list):
-                # Склеим мультимодальный контент в текст
                 parts = []
                 for c in content:
                     if isinstance(c, dict) and c.get("type") == "text":
@@ -280,7 +288,7 @@ class JarvisClientApp(tk.Tk):
             "Jarvis Client — компактный клиент для LM Studio (OpenAI API совместимый).\n"
             "Автор: вы :)\n\n"
             "Поддерживает историю, экспорт, настройки, горячие клавиши.\n"
-            "Модель по умолчанию: Qwen/Qwen2.5‑VL‑7B‑Instruct."
+            "Модель по умолчанию: Qwen/Qwen2.5-VL-7B-Instruct."
         )
 
     # ----------------------------- Настройки --------------------------------- #
@@ -336,7 +344,6 @@ class JarvisClientApp(tk.Tk):
     def _test_api(self, api_url: str):
         self._set_status("Проверка подключения…")
         try:
-            # Мини-запрос (без отправки истории)
             payload = {
                 "model": self.cfg.model,
                 "messages": [
@@ -359,30 +366,90 @@ class JarvisClientApp(tk.Tk):
             self._set_status("Ошибка подключения")
             messagebox.showerror("Ошибка", f"Не удалось подключиться: {e}")
 
+    # ----------------------------- Вложения (изображения) --------------------- #
+    def _attach_image(self):
+        """Выбрать изображение и сохранить его в base64 + MIME."""
+        path = filedialog.askopenfilename(
+            title="Выберите изображение",
+            filetypes=[
+                ("Images", "*.png;*.jpg;*.jpeg;*.webp;*.bmp"),
+                ("PNG", "*.png"),
+                ("JPEG", "*.jpg;*.jpeg"),
+                ("WEBP", "*.webp"),
+                ("BMP", "*.bmp"),
+                ("All files", "*.*"),
+            ],
+        )
+        if not path:
+            return
+        try:
+            mime, _ = mimetypes.guess_type(path)
+            if not mime:
+                mime = "image/png"
+            with open(path, "rb") as f:
+                b = f.read()
+            self.attached_image_b64 = base64.b64encode(b).decode("utf-8")
+            self.attached_image_mime = mime
+            self.attached_image_name = os.path.basename(path)
+            self._set_status(f"Прикреплено: {self.attached_image_name}")
+            self._append_system(f"📎 Вложение: {self.attached_image_name}")
+        except Exception as e:
+            messagebox.showerror("Ошибка", f"Не удалось прикрепить файл: {e}")
+
+    def _clear_attachment(self):
+        self.attached_image_b64 = None
+        self.attached_image_mime = None
+        self.attached_image_name = None
+
     # ----------------------------- Отправка запроса --------------------------- #
     def _send_message(self):
         text = self.input.get("1.0", "end").strip()
         if not text:
             return
 
-        # Добавляем пользователя в UI и историю
+        # Добавляем пользователя в UI
         self._append_user(text)
-        user_content: Union[str, List[dict]] = text
 
-        # Готовим историю для запроса (включая system_prompt в начале)
+        # Готовим историю (включая system_prompt в начале)
         req_messages: List[dict] = []
         if self.cfg.system_prompt:
             req_messages.append({"role": "system", "content": self.cfg.system_prompt})
 
-        # Берём прошлую историю, но без системных сообщений (если кто-то импортировал)
+        # Берём прошлую историю, но без системных сообщений
         for m in self.messages:
             if m.get("role") in ("user", "assistant"):
                 req_messages.append({"role": m["role"], "content": m.get("content", "")})
 
-        req_messages.append({"role": "user", "content": user_content})
+        
+        # Добавляем текущее пользовательское сообщение:
+        # если прикреплена картинка — формируем мультимодальный контент
+        if self.attached_image_b64:
+            if getattr(self.cfg, "supports_images", True):
+                # Мультимодал (vision-модель)
+                parts = [{"type": "text", "text": text}]
+                mime = self.attached_image_mime or "image/png"
+                parts.append({
+                    "type": "image_url",
+                    "image_url": {"url": f"data:{mime};base64,{self.attached_image_b64}"}
+                })
+                req_messages.append({"role": "user", "content": parts})
+            else:
+                # Fallback для текстовой модели: превращаем картинку в текстовое описание
+                filename = self.attached_image_name or "image"
+                fused_text = (
+                    f"{text}\n\n"
+                    f"[IMG attached: {filename}. "
+                    f"Картинка закодирована и недоступна для прямого анализа, "
+                    f"но опиши, что мне сделать исходя из моего текста.]"
+                )
+                req_messages.append({"role": "user", "content": fused_text})
+        else:
+          req_messages.append({"role": "user", "content": text})
+
+
 
         # Лочим UI на время запроса
-        self.send_btn.state(["disabled"])  # disable
+        self.send_btn.state(["disabled"])
         self._set_status("Запрос к модели…")
 
         # Стартуем поток, чтобы не блокировать Tk
@@ -391,8 +458,9 @@ class JarvisClientApp(tk.Tk):
         t.start()
         self._request_thread = t
 
-        # Чистим ввод
+        # Чистим ввод и вложение
         self.input.delete("1.0", "end")
+        self._clear_attachment()
 
     def _worker_request(self, req_messages: List[dict]):
         try:
@@ -406,32 +474,36 @@ class JarvisClientApp(tk.Tk):
             r.raise_for_status()
             data = r.json()
 
-            # Получаем контент (модель может вернуть либо текст, либо JSON-строку)
-            raw_content = data.get("choices", [{}])[0].get("message", {}).get("content", "")
+            # Текстовый контент (если API вернул обычную структуру)
+            raw_content = ""
+            if isinstance(data.get("choices"), list) and data["choices"]:
+                raw_content = data["choices"][0].get("message", {}).get("content", "")
 
-            # По умолчанию не вызываем агент
-            invoke_agent = False
-
-            # 1) Проверяем, не вернул ли сервис флаг invoke_agent в корне JSON
+            # Флаг вызова агента
             invoke_agent = data.get("invoke_agent", False)
-
-            # 2) Если invoke_agent не найден, проверяем, не вернул ли модель JSON-строку
-            #    вида {"invoke_agent": true} в поле content
-            if not invoke_agent:
+            if not invoke_agent and raw_content:
                 try:
                     parsed = json.loads(raw_content)
                     invoke_agent = parsed.get("invoke_agent", False)
                 except (TypeError, json.JSONDecodeError):
                     pass
 
-            # Если требуется вызвать агент, вызываем его и не выводим текст от модели
             if invoke_agent:
                 user_text = req_messages[-1]["content"]
+                # Если последнее сообщение мультимодальное (list), извлечём текст
+                if isinstance(user_text, list):
+                    # найдём первую текстовую часть
+                    for p in user_text:
+                        if isinstance(p, dict) and p.get("type") == "text":
+                            user_text = p.get("text", "")
+                            break
+                    if isinstance(user_text, list):  # на всякий случай
+                        user_text = ""
                 agent = AgentPC(api_url=self.cfg.api_url, model=self.cfg.model)
                 agent.perform_task(user_text)
-                content = ""  # текстовое сообщение от модели в чат не выводим
+                content = ""  # ничего не выводим
             else:
-                content = raw_content  # обычный текст от модели
+                content = raw_content or ""
 
             lat = time.time() - t0
             self.resp_queue.put({"ok": True, "text": content, "latency": lat})
@@ -440,15 +512,13 @@ class JarvisClientApp(tk.Tk):
         finally:
             self.after(10, self._apply_response)
 
-
     def _apply_response(self):
         try:
             item = self.resp_queue.get_nowait()
         except queue.Empty:
             return
 
-        # Разлочим кнопку
-        self.send_btn.state(["!disabled"])  # enable
+        self.send_btn.state(["!disabled"])
 
         if not item.get("ok"):
             self._set_status("Ошибка: " + item.get("error", ""))
@@ -460,9 +530,7 @@ class JarvisClientApp(tk.Tk):
         self._append_assistant(text)
         self._set_status(f"Готов  ·  {latency:.2f}s")
 
-        # Обновляем историю (храним user/assistant только, без системного)
-        # Последний пользовательский текст уже в UI, но мог быть не в self.messages еще:
-        # Восстановим из области чата невозможно, поэтому добавим явно — это безопасно.
+        # Обновляем историю (user/assistant; system не пишем)
         last_user = {
             "role": "user",
             "content": req_last_user_from_ui(self.chat),
@@ -472,16 +540,12 @@ class JarvisClientApp(tk.Tk):
         self.messages.append({"role": "assistant", "content": text})
         save_history(self.messages)
 
-# Хелпер, чтобы взять последний ввод пользователя из Text (нехитро, но работает)
+# Хелпер: вытащить последний ввод пользователя из Text
 def req_last_user_from_ui(chat_text: tk.Text) -> str:
-    # Пройдёмся с конца вверх и найдём последний блок «Вы  ·  HH:MM:SS»
-    # Это упрощённый способ вытащить текст; в реальном приложении можно хранить буфер отдельно.
     content = chat_text.get("1.0", "end")
     lines = [l.rstrip("\n") for l in content.splitlines()]
-    # Найдём последнюю строку с «Вы  ·  » и заберём всё до следующего пустого разделителя
     for i in range(len(lines) - 1, -1, -1):
         if lines[i].startswith("Вы  ·  "):
-            # строки с сообщением идут ниже до пустой строки
             msg_lines = []
             for j in range(i + 1, len(lines)):
                 if lines[j].strip() == "":
@@ -489,7 +553,6 @@ def req_last_user_from_ui(chat_text: tk.Text) -> str:
                 msg_lines.append(lines[j])
             return "\n".join(msg_lines).strip()
     return ""
-
 
 # ============================== Точка входа ================================== #
 if __name__ == "__main__":
