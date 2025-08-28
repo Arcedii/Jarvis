@@ -22,6 +22,14 @@ DEFAULT_TEMPERATURE = float(os.getenv("TEMPERATURE", "0.3"))
 CONFIG_PATH = os.path.join(os.path.dirname(__file__), "jarvis_client_config.json")
 HISTORY_PATH = os.path.join(os.path.dirname(__file__), "jarvis_chat_history.json")
 
+
+# Лимиты
+MAX_TURNS_TO_SEND = 2     # отправляем только последние 2 пары (user/assistant)
+REQUEST_TIMEOUT_SEC = 30  # не держим UI висящим по 120 сек
+FORCE_TEXT_ONLY = True    # временно запретим мультимодал (до поддержки на сервере)
+FORCE_MAX_TOKENS = 48     # короткий ответ
+FORCE_TEMPERATURE = 0.0   # детерминированно и быстрее
+
 # ============================== Датаклассы =================================== #
 @dataclass
 class AppConfig:
@@ -342,29 +350,30 @@ class JarvisClientApp(tk.Tk):
         ttk.Button(btns, text="Сохранить", style="Accent.TButton", command=on_save).pack(side="left")
 
     def _test_api(self, api_url: str):
-        self._set_status("Проверка подключения…")
-        try:
+         self._set_status("Проверка подключения…")
+         try:
             payload = {
                 "model": self.cfg.model,
                 "messages": [
-                    {"role": "system", "content": self.cfg.system_prompt},
-                    {"role": "user", "content": "Ответь 'pong' одним словом."},
+                    {"role": "user", "content": "ping"},  # важно: ровно "ping"
                 ],
-                "temperature": 0.0,
+                # temperature не шлём: без sampling она всё равно игнорируется
             }
-            r = requests.post(api_url, json=payload, timeout=15)
+            r = requests.post(api_url, json=payload, timeout=10)
             r.raise_for_status()
             data = r.json()
             txt = data.get("choices", [{}])[0].get("message", {}).get("content", "")
-            if "pong" in txt.lower():
+            if "pong" in (txt or "").lower():
                 self._set_status("Подключение OK ✨")
-                messagebox.showinfo("Успех", "Подключение к LM Studio работает.")
+                messagebox.showinfo("Успех", "Подключение к Jarvis Brain работает.")
             else:
                 self._set_status("Подключение проверено, но ответ необычный")
                 messagebox.showwarning("Внимание", f"Сервис отвечает, но не как ожидалось: {txt[:200]}")
-        except Exception as e:
+         except Exception as e:
             self._set_status("Ошибка подключения")
             messagebox.showerror("Ошибка", f"Не удалось подключиться: {e}")
+
+
 
     # ----------------------------- Вложения (изображения) --------------------- #
     def _attach_image(self):
@@ -401,116 +410,117 @@ class JarvisClientApp(tk.Tk):
         self.attached_image_mime = None
         self.attached_image_name = None
 
+
+
+
+
     # ----------------------------- Отправка запроса --------------------------- #
     def _send_message(self):
+            # берём текст из ввода
         text = self.input.get("1.0", "end").strip()
         if not text:
             return
 
-        # Добавляем пользователя в UI
+        # показываем в UI сразу
         self._append_user(text)
 
-        # Готовим историю (включая system_prompt в начале)
+        # --- собираем лёгкий prompt ---
         req_messages: List[dict] = []
-        if self.cfg.system_prompt:
-            req_messages.append({"role": "system", "content": self.cfg.system_prompt})
 
-        # Берём прошлую историю, но без системных сообщений
+        # 1) короткий system
+        if self.cfg.system_prompt:
+            sys_short = self.cfg.system_prompt.strip()
+            if len(sys_short) > 400:
+                sys_short = sys_short[:400] + " …"
+            req_messages.append({"role": "system", "content": sys_short})
+
+        # 2) последние N ходов диалога (только текст)
+        turns = []
         for m in self.messages:
             if m.get("role") in ("user", "assistant"):
-                req_messages.append({"role": m["role"], "content": m.get("content", "")})
+                turns.append({"role": m["role"], "content": str(m.get("content", ""))})
+        turns = turns[-(MAX_TURNS_TO_SEND * 2):]
+        req_messages.extend(turns)
 
-        
-        # Добавляем текущее пользовательское сообщение:
-        # если прикреплена картинка — формируем мультимодальный контент
-        if self.attached_image_b64:
-            if getattr(self.cfg, "supports_images", True):
-                # Мультимодал (vision-модель)
-                parts = [{"type": "text", "text": text}]
-                mime = self.attached_image_mime or "image/png"
-                parts.append({
-                    "type": "image_url",
-                    "image_url": {"url": f"data:{mime};base64,{self.attached_image_b64}"}
-                })
-                req_messages.append({"role": "user", "content": parts})
-            else:
-                # Fallback для текстовой модели: превращаем картинку в текстовое описание
-                filename = self.attached_image_name or "image"
-                fused_text = (
-                    f"{text}\n\n"
-                    f"[IMG attached: {filename}. "
-                    f"Картинка закодирована и недоступна для прямого анализа, "
-                    f"но опиши, что мне сделать исходя из моего текста.]"
-                )
-                req_messages.append({"role": "user", "content": fused_text})
+        # 3) текущее пользовательское сообщение
+        if self.attached_image_b64 and not FORCE_TEXT_ONLY and getattr(self.cfg, "supports_images", True):
+            # мультимодал — если включишь поддержку на сервере
+            parts = [{"type": "text", "text": text}]
+            mime = self.attached_image_mime or "image/png"
+            parts.append({
+                "type": "image_url",
+                "image_url": {"url": f"data:{mime};base64,{self.attached_image_b64}"}
+            })
+            req_messages.append({"role": "user", "content": parts})
         else:
-          req_messages.append({"role": "user", "content": text})
+            # строго текст (временно отключаем картинки)
+            if self.attached_image_name:
+                text = f"{text}\n\n[Примечание: прикреплён файл {self.attached_image_name}; анализ изображений временно отключён]"
+            req_messages.append({"role": "user", "content": text})
 
-
-
-        # Лочим UI на время запроса
+        # Лочим UI и статус
         self.send_btn.state(["disabled"])
-        self._set_status("Запрос к модели…")
+        self._set_status("Запрос к модели… (короткий)")
 
-        # Стартуем поток, чтобы не блокировать Tk
+        # Фоновый поток, чтобы не блокировать Tk
         t = threading.Thread(target=self._worker_request, args=(req_messages,))
         t.daemon = True
         t.start()
         self._request_thread = t
 
-        # Чистим ввод и вложение
+        # очистка ввода и вложения
         self.input.delete("1.0", "end")
         self._clear_attachment()
 
+
+
+
     def _worker_request(self, req_messages: List[dict]):
-        try:
+         try:
             payload = {
                 "model": self.cfg.model,
                 "messages": req_messages,
-                "temperature": float(self.cfg.temperature),
+                "max_tokens": FORCE_MAX_TOKENS,
+                "temperature": FORCE_TEMPERATURE,
             }
+
+            # отладочные логи в консоль
+            print("\n=== JARVIS REQUEST ===")
+            print("URL:", self.cfg.api_url)
+            try:
+                approx_len = sum(len(str(m.get("content", ""))) for m in req_messages)
+            except Exception:
+                approx_len = -1
+            print(f"messages: {len(req_messages)}  approx_text_len: {approx_len}")
+            print("first_msg:", req_messages[0] if req_messages else None)
+            print("last_msg:", req_messages[-1] if req_messages else None)
+
             t0 = time.time()
-            r = requests.post(self.cfg.api_url, json=payload, timeout=120)
+            r = requests.post(self.cfg.api_url, json=payload, timeout=REQUEST_TIMEOUT_SEC)
+            status = r.status_code
+            txt_preview = r.text[:500] if isinstance(r.text, str) else str(r.text)[:500]
+            dt = time.time() - t0
+            print(f"HTTP {status} in {dt:.2f}s; body preview:\n{txt_preview}\n")
+
             r.raise_for_status()
             data = r.json()
 
-            # Текстовый контент (если API вернул обычную структуру)
+            # стандартный OpenAI-образный ответ
             raw_content = ""
             if isinstance(data.get("choices"), list) and data["choices"]:
                 raw_content = data["choices"][0].get("message", {}).get("content", "")
 
-            # Флаг вызова агента
-            invoke_agent = data.get("invoke_agent", False)
-            if not invoke_agent and raw_content:
-                try:
-                    parsed = json.loads(raw_content)
-                    invoke_agent = parsed.get("invoke_agent", False)
-                except (TypeError, json.JSONDecodeError):
-                    pass
+            content = raw_content or ""
+            self.resp_queue.put({"ok": True, "text": content, "latency": dt})
 
-            if invoke_agent:
-                user_text = req_messages[-1]["content"]
-                # Если последнее сообщение мультимодальное (list), извлечём текст
-                if isinstance(user_text, list):
-                    # найдём первую текстовую часть
-                    for p in user_text:
-                        if isinstance(p, dict) and p.get("type") == "text":
-                            user_text = p.get("text", "")
-                            break
-                    if isinstance(user_text, list):  # на всякий случай
-                        user_text = ""
-                agent = AgentPC(api_url=self.cfg.api_url, model=self.cfg.model)
-                agent.perform_task(user_text)
-                content = ""  # ничего не выводим
-            else:
-                content = raw_content or ""
-
-            lat = time.time() - t0
-            self.resp_queue.put({"ok": True, "text": content, "latency": lat})
-        except Exception as e:
+         except requests.Timeout:
+            self.resp_queue.put({"ok": False, "error": f"Таймаут {REQUEST_TIMEOUT_SEC}s"})
+         except Exception as e:
             self.resp_queue.put({"ok": False, "error": str(e)})
-        finally:
+         finally:
             self.after(10, self._apply_response)
+
+
 
     def _apply_response(self):
         try:
