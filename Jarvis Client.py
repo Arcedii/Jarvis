@@ -17,7 +17,7 @@ from Agent_PC import AgentPC
 
 # ===================== Константы и настройки по умолчанию ===================== #
 DEFAULT_API_URL = "http://192.168.100.8:1234/v1/chat/completions"
-DEFAULT_MODEL = "google/gemma-3-12b-it"
+DEFAULT_MODEL = "Qwen/Qwen2.5-VL-7B-Instruct"
 DEFAULT_TEMPERATURE = float(os.getenv("TEMPERATURE", "0.3"))
 CONFIG_PATH = os.path.join(os.path.dirname(__file__), "jarvis_client_config.json")
 HISTORY_PATH = os.path.join(os.path.dirname(__file__), "jarvis_chat_history.json")
