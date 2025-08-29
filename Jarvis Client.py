@@ -17,7 +17,7 @@ from Agent_PC import AgentPC
 
 # ===================== Константы и настройки по умолчанию ===================== #
 DEFAULT_API_URL = "http://192.168.100.8:1234/v1/chat/completions"
-DEFAULT_MODEL = "Qwen/Qwen2.5-VL-7B-Instruct"
+DEFAULT_MODEL = "Qwen/Qwen2.5-V1-7B"
 DEFAULT_TEMPERATURE = float(os.getenv("TEMPERATURE", "0.3"))
 CONFIG_PATH = os.path.join(os.path.dirname(__file__), "jarvis_client_config.json")
 HISTORY_PATH = os.path.join(os.path.dirname(__file__), "jarvis_chat_history.json")
@@ -25,9 +25,9 @@ HISTORY_PATH = os.path.join(os.path.dirname(__file__), "jarvis_chat_history.json
 
 # Лимиты
 MAX_TURNS_TO_SEND = 2     # отправляем только последние 2 пары (user/assistant)
-REQUEST_TIMEOUT_SEC = 30  # не держим UI висящим по 120 сек
-FORCE_TEXT_ONLY = True    # временно запретим мультимодал (до поддержки на сервере)
-FORCE_MAX_TOKENS = 48     # короткий ответ
+REQUEST_TIMEOUT_SEC = 1000  # не держим UI висящим по 120 сек
+FORCE_TEXT_ONLY = False    # временно запретим мультимодал (до поддержки на сервере)
+FORCE_MAX_TOKENS = 512     # короткий ответ
 FORCE_TEMPERATURE = 0.0   # детерминированно и быстрее
 
 # ============================== Датаклассы =================================== #
@@ -453,6 +453,9 @@ class JarvisClientApp(tk.Tk):
             })
             req_messages.append({"role": "user", "content": parts})
         else:
+            # строго текст (временно отключаем картинки)
+            ...
+
             # строго текст (временно отключаем картинки)
             if self.attached_image_name:
                 text = f"{text}\n\n[Примечание: прикреплён файл {self.attached_image_name}; анализ изображений временно отключён]"
