@@ -37,8 +37,8 @@ class AppConfig:
     model: str = DEFAULT_MODEL
     temperature: float = DEFAULT_TEMPERATURE
     system_prompt: str = (
-        "Ты — Jarvis, вежливый и лаконичный ассистент. Отвечай по делу, на русском,"
-        " с примерами, когда это уместно."
+        "Ты — ассистент по анализу скриншотов интерфейсов. "
+        "Сначала коротко опиши, что видно, затем ответь на вопрос. Если текст мелкий — процитируй его дословно."
     )
     supports_images: bool = True
 
