@@ -1,38 +1,33 @@
 # jarvis_client_gui.py
 from __future__ import annotations
-import base64
-import mimetypes
-import os
-import json
+import base64, mimetypes, os, json
 from dataclasses import asdict
 from datetime import datetime
 from typing import List, Dict, Any, Optional
-
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 
+# ВАЖНО: используем твои модули и пути
 from Scipts.OpenAiGPTBrain import LLMClient, LLMConfig
+from Scipts.MainAgent import handle_command
 
 CONFIG_PATH = os.path.join(os.path.dirname(__file__), "jarvis_client_config.json")
 HISTORY_PATH = os.path.join(os.path.dirname(__file__), "jarvis_chat_history.json")
 MAX_TURNS_TO_SEND = 2
 
-# ---------- Вспомогательные сохранение/загрузка ---------- #
+# ---------- конфиг/история ----------
 def load_config() -> LLMConfig:
     if os.path.exists(CONFIG_PATH):
         try:
             with open(CONFIG_PATH, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            return LLMConfig(**data)
+                return LLMConfig(**json.load(f))
         except Exception:
             pass
     return LLMConfig()
 
-
 def save_config(cfg: LLMConfig) -> None:
     with open(CONFIG_PATH, "w", encoding="utf-8") as f:
         json.dump(asdict(cfg), f, ensure_ascii=False, indent=2)
-
 
 def load_history() -> List[Dict[str, Any]]:
     if os.path.exists(HISTORY_PATH):
@@ -43,15 +38,14 @@ def load_history() -> List[Dict[str, Any]]:
             pass
     return []
 
-
-def save_history(messages: List[Dict[str, Any]]) -> None:
+def save_history(messages: List[dict]) -> None:
     try:
         with open(HISTORY_PATH, "w", encoding="utf-8") as f:
             json.dump(messages, f, ensure_ascii=False, indent=2)
     except Exception:
         pass
 
-
+# ---------- GUI ----------
 class JarvisClientApp(tk.Tk):
     def __init__(self):
         super().__init__()
@@ -60,17 +54,14 @@ class JarvisClientApp(tk.Tk):
         self.minsize(820, 600)
         self.configure(bg="#0b1220")
 
-        # Состояние
         self.cfg: LLMConfig = load_config()
         self.llm = LLMClient(self.cfg)
         self.messages: List[Dict[str, Any]] = load_history()
 
-        # Состояние вложения (визуальная часть)
         self.attached_image_b64: Optional[str] = None
         self.attached_image_mime: Optional[str] = None
         self.attached_image_name: Optional[str] = None
 
-        # UI
         self._init_styles()
         self._init_menu()
         self._init_header()
@@ -78,40 +69,40 @@ class JarvisClientApp(tk.Tk):
         self._init_input_panel()
         self.after(50, self._bootstrap)
 
-    # ---------- UI построение ---------- #
+    # --- UI ---
     def _init_styles(self):
-        style = ttk.Style()
+        s = ttk.Style()
         try:
-            style.theme_use("clam")
+            s.theme_use("clam")
         except tk.TclError:
             pass
-        style.configure("TButton", padding=6, relief="flat")
-        style.configure("Accent.TButton", padding=8, relief="flat")
-        style.configure("TLabel", foreground="#e6eaf2", background="#0b1220")
-        style.configure("Header.TLabel", font=("Segoe UI Semibold", 14))
-        style.configure("Tiny.TLabel", font=("Segoe UI", 9), foreground="#9aa4b2")
-        style.configure("TFrame", background="#0b1220")
-        style.configure("Card.TFrame", background="#121a2b", relief="flat")
-        style.configure("Input.TFrame", background="#0f1729")
-        style.configure("TEntry", fieldbackground="#101827", foreground="#e6eaf2")
+        s.configure("TButton", padding=6, relief="flat")
+        s.configure("Accent.TButton", padding=8, relief="flat")
+        s.configure("TLabel", foreground="#e6eaf2", background="#0b1220")
+        s.configure("Header.TLabel", font=("Segoe UI Semibold", 14))
+        s.configure("Tiny.TLabel", font=("Segoe UI", 9), foreground="#9aa4b2")
+        s.configure("TFrame", background="#0b1220")
+        s.configure("Card.TFrame", background="#121a2b")
+        s.configure("Input.TFrame", background="#0f1729")
+        s.configure("TEntry", fieldbackground="#101827", foreground="#e6eaf2")
 
     def _init_menu(self):
-        menubar = tk.Menu(self)
-        file_menu = tk.Menu(menubar, tearoff=0)
-        file_menu.add_command(label="Сохранить историю…", command=self._export_history)
-        file_menu.add_separator()
-        file_menu.add_command(label="Выход", command=self.destroy)
-        menubar.add_cascade(label="Файл", menu=file_menu)
+        m = tk.Menu(self)
+        f = tk.Menu(m, tearoff=0)
+        f.add_command(label="Сохранить историю…", command=self._export_history)
+        f.add_separator()
+        f.add_command(label="Выход", command=self.destroy)
+        m.add_cascade(label="Файл", menu=f)
 
-        settings_menu = tk.Menu(menubar, tearoff=0)
-        settings_menu.add_command(label="Настройки…", command=self._open_settings)
-        settings_menu.add_command(label="Сбросить диалог", command=self._reset_chat)
-        menubar.add_cascade(label="Настройки", menu=settings_menu)
+        s = tk.Menu(m, tearoff=0)
+        s.add_command(label="Настройки…", command=self._open_settings)
+        s.add_command(label="Сбросить диалог", command=self._reset_chat)
+        m.add_cascade(label="Настройки", menu=s)
 
-        help_menu = tk.Menu(menubar, tearoff=0)
-        help_menu.add_command(label="О программе…", command=self._about)
-        menubar.add_cascade(label="Справка", menu=help_menu)
-        self.config(menu=menubar)
+        h = tk.Menu(m, tearoff=0)
+        h.add_command(label="О программе…", command=self._about)
+        m.add_cascade(label="Справка", menu=h)
+        self.config(menu=m)
 
     def _init_header(self):
         header = ttk.Frame(self, style="TFrame")
@@ -165,7 +156,7 @@ class JarvisClientApp(tk.Tk):
         self.clear_btn = ttk.Button(btns, text="Очистить ввод", command=lambda: self.input.delete("1.0", "end"))
         self.clear_btn.grid(row=1, column=0, sticky="ew", pady=(6, 0))
 
-    # ---------- Вспомогательное UI ---------- #
+    # --- helpers ---
     def _bootstrap(self):
         if not self.messages:
             self._append_assistant("Привет! Я Jarvis. Подключён к LM Studio. Чем помочь?")
@@ -226,11 +217,7 @@ class JarvisClientApp(tk.Tk):
         )
         if not path:
             return
-        lines = []
-        for m in self.messages:
-            role = m.get("role", "?")
-            content = m.get("content", "")
-            lines.append(f"[{role}] {content}")
+        lines = [f"[{m.get('role','?')}] {m.get('content','')}" for m in self.messages]
         try:
             with open(path, "w", encoding="utf-8") as f:
                 f.write("\n\n".join(lines))
@@ -239,18 +226,14 @@ class JarvisClientApp(tk.Tk):
             messagebox.showerror("Ошибка", f"Не удалось сохранить файл: {e}")
 
     def _about(self):
-        messagebox.showinfo(
-            "О программе",
-            "Jarvis Client — компактный клиент для LM Studio (OpenAI API совместимый).\n"
-            "Поддерживает историю, экспорт, настройки, горячие клавиши."
-        )
+        messagebox.showinfo("О программе", "Jarvis Client — GUI к LM Studio.\nИстория, экспорт, настройки, вложения.")
 
-    # ---------- Настройки ---------- #
+    # --- Настройки ---
     def _open_settings(self):
         win = tk.Toplevel(self)
         win.title("Настройки")
         win.configure(bg="#0b1220")
-        win.geometry("560x360")
+        win.geometry("560x380")
         win.transient(self)
         win.grab_set()
 
@@ -259,27 +242,23 @@ class JarvisClientApp(tk.Tk):
 
         ttk.Label(frm, text="LM Studio Chat Completions URL:").grid(row=0, column=0, sticky="w")
         api_var = tk.StringVar(value=self.cfg.api_url)
-        api_entry = ttk.Entry(frm, textvariable=api_var, width=64)
-        api_entry.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(4, 12))
+        ttk.Entry(frm, textvariable=api_var, width=64).grid(row=1, column=0, columnspan=2, sticky="ew", pady=(4, 12))
 
         ttk.Label(frm, text="Модель (model):").grid(row=2, column=0, sticky="w")
         model_var = tk.StringVar(value=self.cfg.model)
-        model_entry = ttk.Entry(frm, textvariable=model_var, width=48)
-        model_entry.grid(row=3, column=0, sticky="ew", pady=(4, 12))
+        ttk.Entry(frm, textvariable=model_var, width=48).grid(row=3, column=0, sticky="ew", pady=(4, 12))
 
         ttk.Label(frm, text="Температура:").grid(row=4, column=0, sticky="w")
         temp_var = tk.DoubleVar(value=self.cfg.temperature)
-        temp_scale = ttk.Scale(frm, variable=temp_var, from_=0.0, to=1.5)
-        temp_scale.grid(row=5, column=0, sticky="ew", pady=(4, 12))
+        ttk.Scale(frm, variable=temp_var, from_=0.0, to=1.5).grid(row=5, column=0, sticky="ew", pady=(4, 12))
 
-        ttk.Label(frm, text="System prompt:").grid(row=6, column=0, sticky="w")
-        sys_text = tk.Text(frm, height=5, wrap="word")
+        ttk.Label(frm, text="System prompt (протокол команды):").grid(row=6, column=0, sticky="w")
+        sys_text = tk.Text(frm, height=6, wrap="word")
         sys_text.insert("1.0", self.cfg.system_prompt)
         sys_text.grid(row=7, column=0, columnspan=2, sticky="nsew")
 
         frm.columnconfigure(0, weight=1)
         frm.rowconfigure(7, weight=1)
-
         btns = ttk.Frame(frm)
         btns.grid(row=8, column=0, sticky="e", pady=(12, 0))
 
@@ -313,25 +292,17 @@ class JarvisClientApp(tk.Tk):
 
         ttk.Button(btns, text="Сохранить", style="Accent.TButton", command=on_save).pack(side="left")
 
-    # ---------- Вложения (визуальная часть) ---------- #
+    # --- Вложения ---
     def _attach_image(self):
         path = filedialog.askopenfilename(
             title="Выберите изображение",
-            filetypes=[
-                ("Images", "*.png;*.jpg;*.jpeg;*.webp;*.bmp"),
-                ("PNG", "*.png"),
-                ("JPEG", "*.jpg;*.jpeg"),
-                ("WEBP", "*.webp"),
-                ("BMP", "*.bmp"),
-                ("All files", "*.*"),
-            ],
+            filetypes=[("Images", "*.png;*.jpg;*.jpeg;*.webp;*.bmp"), ("All files", "*.*")],
         )
         if not path:
             return
         try:
             mime, _ = mimetypes.guess_type(path)
-            if not mime:
-                mime = "image/png"
+            mime = mime or "image/png"
             with open(path, "rb") as f:
                 b = f.read()
             self.attached_image_b64 = base64.b64encode(b).decode("utf-8")
@@ -347,14 +318,13 @@ class JarvisClientApp(tk.Tk):
         self.attached_image_mime = None
         self.attached_image_name = None
 
-    # ---------- Отправка сообщения (только визуал + вызов LLMClient) ---------- #
+    # --- Отправка и приём ---
     def _send_message(self):
         text = self.input.get("1.0", "end").strip()
         if not text:
             return
         self._append_user(text)
 
-        # Готовим attachment-структуру только для визуала
         attachment = None
         if self.attached_image_b64:
             attachment = {
@@ -363,7 +333,6 @@ class JarvisClientApp(tk.Tk):
                 "name": self.attached_image_name or "image",
             }
 
-        # Собираем сообщения через LLMClient
         req_messages = self.llm.build_messages(
             system_prompt=self.cfg.system_prompt,
             history=self.messages,
@@ -373,54 +342,75 @@ class JarvisClientApp(tk.Tk):
             force_text_only=False,
         )
 
-        # Блокируем кнопку и отправляем асинхронно
         self.send_btn.state(["disabled"])
-        self._set_status("Запрос к модели… (короткий)")
+        self._set_status("Запрос к модели…")
 
-        def on_success(answer_text: str, latency: float, meta: Dict[str, Any]):
-            # Возвращаемся в UI-поток
-            self.after(10, lambda: self._apply_success(answer_text, latency))
+        # Универсальный on_success: поддерживает (text, latency) и (text, latency, meta)
+        def on_success(*args):
+            if len(args) == 3:
+                answer_text, latency, meta = args
+            elif len(args) == 2:
+                answer_text, latency = args
+                meta = {}
+            else:
+                answer_text, latency, meta = "(пустой ответ)", 0.0, {}
+
+            def _apply():
+                self.send_btn.state(["!disabled"])
+                self._append_assistant((answer_text or "").strip() or "(пустой ответ)")
+                self._set_status(f"Готов  ·  {latency:.2f}s")
+
+                # история
+                last_user = {"role": "user", "content": req_last_user_from_ui(self.chat)}
+                if last_user["content"]:
+                    self.messages.append(last_user)
+                self.messages.append({"role": "assistant", "content": answer_text})
+                save_history(self.messages)
+
+                # команда → агент (ФОНОМ, чтобы не блокировать GUI)
+                cmd = (meta or {}).get("command") or ""
+                if cmd:
+                    self._append_system(f"Команда от LLM: {cmd}")
+                    import threading
+                    def run_agent():
+                        try:
+                            # тот же модуль, что в заголовке файла
+                            from Scipts.MainAgent import handle_command
+                            result = handle_command(cmd)
+                        except Exception as e:
+                            result = f"Ошибка агента: {e}"
+                        self.after(10, lambda: self._append_system(f"АГЕНТ: {result}" if result else "АГЕНТ: OK"))
+                    threading.Thread(target=run_agent, daemon=True).start()
+
+            # КРИТИЧЕСКИ ВАЖНО: применяем изменения в UI-потоке
+            self.after(10, _apply)
 
         def on_error(err_text: str):
             self.after(10, lambda: self._apply_error(err_text))
 
         self.llm.send_chat_async(req_messages, on_success, on_error)
-
-        # очистка поля ввода/вложений
+        # чистим поле и вложение
         self.input.delete("1.0", "end")
         self._clear_attachment()
-
-    def _apply_success(self, text: str, latency: float):
-        self.send_btn.state(["!disabled"])
-        self._append_assistant(text.strip() or "(пустой ответ)")
-        self._set_status(f"Готов  ·  {latency:.2f}s")
-        # Обновляем историю
-        last_user = {"role": "user", "content": req_last_user_from_ui(self.chat)}
-        if last_user["content"]:
-            self.messages.append(last_user)
-        self.messages.append({"role": "assistant", "content": text})
-        save_history(self.messages)
 
     def _apply_error(self, err: str):
         self.send_btn.state(["!disabled"])
         self._set_status("Ошибка: " + err)
         messagebox.showerror("Ошибка запроса", err)
 
-
-# Хелпер: вытащить последний ввод пользователя из Text
+# вытащить последний ввод пользователя из Text
 def req_last_user_from_ui(chat_text: tk.Text) -> str:
     content = chat_text.get("1.0", "end")
     lines = [l.rstrip("\n") for l in content.splitlines()]
     for i in range(len(lines) - 1, -1, -1):
         if lines[i].startswith("Вы  ·  "):
-            msg_lines = []
+            msg = []
             for j in range(i + 1, len(lines)):
                 if lines[j].strip() == "":
                     break
-                msg_lines.append(lines[j])
-            return "\n".join(msg_lines).strip()
+                msg.append(lines[j])
+            return "\n".join(msg).strip()
     return ""
-
 
 if __name__ == "__main__":
     app = JarvisClientApp()

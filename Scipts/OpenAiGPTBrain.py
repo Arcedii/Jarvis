@@ -2,18 +2,20 @@
 from __future__ import annotations
 import time
 import threading
+import re
 from dataclasses import dataclass
-from typing import List, Dict, Any, Optional, Callable
-
+from typing import List, Dict, Any, Optional, Callable, Tuple
 import requests
 
-# ===== Константы по умолчанию (можно менять из GUI через set_config) ===== #
+# ==== базовые настройки ====
 DEFAULT_API_URL = "http://192.168.100.8:1234/v1/chat/completions"
-DEFAULT_MODEL = "OpenAi/"
+DEFAULT_MODEL = "openai/gpt-oss-20b"
 REQUEST_TIMEOUT_SEC = 1000
 FORCE_MAX_TOKENS = 512
 FORCE_TEMPERATURE = 0.0
 
+# Протокол команды в ответе: <<COMMAND=приветствие>>
+COMMAND_PATTERN = re.compile(r"<<\s*COMMAND\s*=\s*([\w\-А-Яа-я]+)\s*>>")
 
 @dataclass
 class LLMConfig:
@@ -21,22 +23,19 @@ class LLMConfig:
     model: str = DEFAULT_MODEL
     temperature: float = 0.3
     system_prompt: str = (
-        "Ты — ассистент Jarvis"
+        "Ты — локальный ассистент Jarvis. Отвечай коротко и по делу.\n"
+        "Если пользователь здоровается (\"привет\", \"джарвис голос\", \"hello\" и т.п.) — "
+        "в конце ответа добавь тег <<COMMAND=приветствие>>.\n"
+        "Если команда не нужна — ничего не добавляй. Отвечай как обычно."
     )
     supports_images: bool = True
 
-
 class LLMClient:
-    """Изолирует всю работу с LLM/HTTP. Потокобезопасный отправитель.
-
-    GUI передает сюда подготовленную историю и текущий ввод, а получает
-    колбэками результат или ошибку, не блокируя UI-поток.
-    """
+    """Вся работа с LLM/HTTP + извлечение команд из ответа."""
 
     def __init__(self, cfg: Optional[LLMConfig] = None):
         self.cfg = cfg or LLMConfig()
 
-    # --- Публичные методы конфигурации --- #
     def set_config(self, **kwargs) -> None:
         for k, v in kwargs.items():
             if hasattr(self.cfg, k):
@@ -45,16 +44,11 @@ class LLMClient:
     def get_config(self) -> LLMConfig:
         return self.cfg
 
-    # --- Сервис: тест API (пинг) --- #
+    # Быстрый пинг
     def test_api(self, api_url: Optional[str] = None, model: Optional[str] = None) -> Dict[str, Any]:
         url = api_url or self.cfg.api_url
         mdl = model or self.cfg.model
-        payload = {
-            "model": mdl,
-            "messages": [{"role": "user", "content": "ping"}],
-            "max_tokens": 8,
-            "temperature": 0,
-        }
+        payload = {"model": mdl, "messages": [{"role": "user", "content": "ping"}], "max_tokens": 8, "temperature": 0}
         t0 = time.time()
         r = requests.post(url, json=payload, timeout=10)
         r.raise_for_status()
@@ -62,11 +56,11 @@ class LLMClient:
         txt = (data.get("choices", [{}])[0].get("message", {}) or {}).get("content", "")
         return {"ok": True, "text": txt, "latency": time.time() - t0, "raw": data}
 
-    # --- Сбор сообщений --- #
+    # Сбор messages для chat.completions
     def build_messages(
         self,
         system_prompt: str,
-        history: List[Dict[str, Any]],  # только роли user/assistant
+        history: List[Dict[str, Any]],
         user_text: str,
         attachment: Optional[Dict[str, str]] = None,  # {"mime":..., "b64":..., "name":...}
         max_turns_to_send: int = 2,
@@ -74,34 +68,22 @@ class LLMClient:
     ) -> List[Dict[str, Any]]:
         msgs: List[Dict[str, Any]] = []
 
-        # system
         if system_prompt:
             sys_short = system_prompt.strip()
-            if len(sys_short) > 400:
-                sys_short = sys_short[:400] + " …"
+            if len(sys_short) > 900:
+                sys_short = sys_short[:900] + " …"
             msgs.append({"role": "system", "content": sys_short})
 
-        # последние N ходов
         turns: List[Dict[str, Any]] = []
         for m in history:
             if m.get("role") in ("user", "assistant"):
                 turns.append({"role": m["role"], "content": str(m.get("content", ""))})
-        turns = turns[-(max_turns_to_send * 2):]
-        msgs.extend(turns)
+        msgs.extend(turns[-(max_turns_to_send * 2):])
 
-        # текущий ввод
-        if (
-            attachment
-            and (not force_text_only)
-            and self.cfg.supports_images
-            and attachment.get("b64")
-        ):
+        if attachment and (not force_text_only) and self.cfg.supports_images and attachment.get("b64"):
             parts = [{"type": "text", "text": user_text}]
             mime = attachment.get("mime") or "image/png"
-            parts.append({
-                "type": "image_url",
-                "image_url": {"url": f"data:{mime};base64,{attachment['b64']}"}
-            })
+            parts.append({"type": "image_url", "image_url": {"url": f"data:{mime};base64,{attachment['b64']}"}})
             msgs.append({"role": "user", "content": parts})
         else:
             text = user_text
@@ -111,7 +93,17 @@ class LLMClient:
 
         return msgs
 
-    # --- Отправка: асинхронно (в отдельном потоке) --- #
+    # Извлечь команду и очистить текст
+    @staticmethod
+    def extract_command_and_clean(text: str) -> Tuple[str, str]:
+        cmd = ""
+        m = COMMAND_PATTERN.search(text or "")
+        if m:
+            cmd = m.group(1).strip().lower()
+            text = COMMAND_PATTERN.sub("", text).strip()
+        return cmd, text
+
+    # Отправка в отдельном потоке
     def send_chat_async(
         self,
         messages: List[Dict[str, Any]],
@@ -128,19 +120,18 @@ class LLMClient:
                 }
                 t0 = time.time()
                 r = requests.post(self.cfg.api_url, json=payload, timeout=REQUEST_TIMEOUT_SEC)
-                body_preview = r.text[:500] if isinstance(r.text, str) else str(r.text)[:500]
+                preview = r.text[:500] if isinstance(r.text, str) else str(r.text)[:500]
                 r.raise_for_status()
                 data = r.json()
-
-                raw_content = ""
+                content = ""
                 if isinstance(data.get("choices"), list) and data["choices"]:
-                    raw_content = data["choices"][0].get("message", {}).get("content", "")
-                text = raw_content or ""
-                on_success(text, time.time() - t0, {"http_status": r.status_code, "preview": body_preview})
+                    content = data["choices"][0].get("message", {}).get("content", "") or ""
+                cmd, clean = self.extract_command_and_clean(content)
+                meta = {"http_status": r.status_code, "preview": preview, "command": cmd}
+                on_success(clean, time.time() - t0, meta)
             except requests.Timeout:
                 on_error(f"Таймаут {REQUEST_TIMEOUT_SEC}s")
             except Exception as e:
                 on_error(str(e))
 
-        th = threading.Thread(target=_worker, daemon=True)
-        th.start()
+        threading.Thread(target=_worker, daemon=True).start()
