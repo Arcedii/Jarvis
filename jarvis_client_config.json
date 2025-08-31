@@ -1,0 +1,9 @@
+{
+  "api_url": "http://192.168.100.8:1234/v1/chat/completions",
+  "model": "openai/gpt-oss-20b",
+  "temperature": 0.3,
+  "system_prompt": "Ты — локальный ассистент Jarvis. Отвечай коротко и по делу.\nЕсли пользователь здоровается (\"привет\", \"джарвис голос\", \"hello\" и т.п.) — в конце ответа добавь тег <<COMMAND=приветствие>>.\nЕсли команда не нужна — ничего не добавляй. Отвечай как обычно.",
+  "supports_images": true,
+  "vosk_model_path": "C:/Users/User/Desktop 2/Jarvis/VoskModel",
+  "wake_mp3_path": "C:/Users/User/Desktop 2/Jarvis/JarvisVoice/Слушаю сэр.mp3"
+}

@@ -30,5 +30,61 @@
   {
     "role": "assistant",
     "content": "Привет! Как я могу помочь тебе сегодня?"
+  },
+  {
+    "role": "user",
+    "content": "Здарова"
+  },
+  {
+    "role": "assistant",
+    "content": "<|channel|>commentary to=assistant <|constrain|>response<|message|>Привет! Как я могу помочь тебе сегодня?"
+  },
+  {
+    "role": "user",
+    "content": "Здарова"
+  },
+  {
+    "role": "assistant",
+    "content": "Здарова! Как я могу помочь тебе сегодня?"
+  },
+  {
+    "role": "user",
+    "content": "Привет"
+  },
+  {
+    "role": "assistant",
+    "content": "Привет! Как я могу помочь тебе сегодня?"
+  },
+  {
+    "role": "user",
+    "content": "привет"
+  },
+  {
+    "role": "assistant",
+    "content": "Привет! Как я могу помочь тебе сегодня?"
+  },
+  {
+    "role": "user",
+    "content": "привет"
+  },
+  {
+    "role": "assistant",
+    "content": "Привет! Как я могу помочь тебе сегодня?"
+  },
+  {
+    "role": "user",
+    "content": "привет"
+  },
+  {
+    "role": "assistant",
+    "content": "Привет! Как я могу помочь тебе сегодня?"
+  },
+  {
+    "role": "user",
+    "content": "привет"
+  },
+  {
+    "role": "assistant",
+    "content": "Привет! Как я могу помочь тебе сегодня?"
   }
 ]
