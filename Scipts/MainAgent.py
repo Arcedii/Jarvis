@@ -3,11 +3,20 @@ from __future__ import annotations
 import os
 import sys
 from typing import Optional
+import webbrowser
 
 # === Файл по умолчанию для команды "приветствие" (как раньше) ===
 DEFAULT_GREETING_MP3 = os.path.abspath(
     os.path.join(os.path.dirname(__file__), "..", "JarvisVoice", "Здравствуйте сэр.mp3")
 )
+
+# Погода (проигрывается при команде "погода")
+DEFAULT_WEATHER_MP3 = os.path.abspath(
+    os.path.join(os.path.dirname(__file__), "..", "JarvisVoice", "Вот прогноз на сегодня сэр.mp3")
+)
+
+# Сайт погоды (можешь поменять на свой город/сервис)
+DEFAULT_WEATHER_URL = "https://yandex.md/pogoda/ru/kishinev?lat=47.002419&lon=28.819455"
 
 # --- Универсальный проигрыватель MP3 ---
 def play_mp3(path: str) -> str:
@@ -64,15 +73,31 @@ def _play_mp3_windows(path: str) -> str:
 # ---------- Совместимость с LLM-командами ----------
 def handle_command(cmd: str) -> Optional[str]:
     """
-    Точка входа для команд от LLM.
-    СНОВА поддерживает 'приветствие' (как раньше).
+    Точка входа для команд от LLM/GUI.
+    Поддерживает:
+      - "приветствие" -> играет DEFAULT_GREETING_MP3
+      - "погода"      -> играет DEFAULT_WEATHER_MP3, затем открывает DEFAULT_WEATHER_URL
     """
     if not cmd:
         return None
 
     c = cmd.strip().lower()
+
     if c in ("приветствие", "greeting", "hello_voice"):
-        # играем стандартный файл по умолчанию
         return play_mp3(DEFAULT_GREETING_MP3)
+
+    if c in ("погода", "weather"):
+        # 1) звук "погода"
+        sound_result = play_mp3(DEFAULT_WEATHER_MP3)
+        # 2) открыть сайт с прогнозом
+        try:
+            webbrowser.open(DEFAULT_WEATHER_URL)
+            open_result = "Открыл прогноз погоды."
+        except Exception as e:
+            open_result = f"Ошибка при открытии погоды: {e}"
+        # объединённый результат для GUI
+        if sound_result.startswith("Проиграл"):
+            return f"{sound_result}  {open_result}"
+        return f"{sound_result}  {open_result}"
 
     return f"Неизвестная команда: {cmd}"
