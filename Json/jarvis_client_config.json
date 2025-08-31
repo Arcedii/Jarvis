@@ -1,6 +1,6 @@
 {
   "api_url": "http://192.168.100.8:1234/v1/chat/completions",
-  "model": "Qwen/Qwen2.5-V1-7B",
+  "model": "OpenAi/gpt-oss-20b",
   "temperature": 0.3,
   "system_prompt": "Ты — Jarvis, вежливый и лаконичный ассистент. Отвечай по делу, на русском, с примерами, когда это уместно.",
   "supports_images": true
