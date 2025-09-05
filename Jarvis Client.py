@@ -6,7 +6,8 @@ from datetime import datetime
 from typing import List, Dict, Any, Optional
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
-from Scipts.voice_clone import speak_clone
+
+
 
 from Scipts.OpenAiGPTBrain import LLMClient, LLMConfig
 from Scipts.MainAgent import handle_command, play_mp3
@@ -457,19 +458,20 @@ class JarvisClientApp(tk.Tk):
                 else:
                     # озвучиваем обычный текст (без команд) клонированным голосом
                     sample_voice_path = os.path.abspath(
-                        os.path.join(os.path.dirname(__file__), "JarvisVoice", "Compilation2.wav")
+                        os.path.join(os.path.dirname(__file__), "JarvisVoice", "instruction.wav")
                     )
                     def speak_async():
                         try:
                             # ленивый импорт, чтобы TTS не грузился при старте GUI
-                            from Scipts.voice_clone import speak_clone
-                            result = speak_clone(
-                                answer_text,
-                                sample_voice_path,
-                                lang="ru",
-                                speed=0.88,        # 0.85–0.92 обычно естественнее
-                                pause_ms=140,      # пауза между фразами
-                                normalize_dbfs=-14 # выравнивание громкости; None – отключить
+                            from Scipts.voice_clone_remote import speak_clone_remote
+                            result = speak_clone_remote(
+                                    answer_text,
+                                    sample_voice_path,   # твой Compilation2.wav / .mp3
+                                    lang="ru",
+                                    speed=0.88,
+                                    sample_rate=0,       # сервер вернёт нативный SR (обычно 24000)
+                                    voice_id="jarvis",   # фиксировано или опусти — сгенерится от хэша файла
+                                    do_play=True
                             )
                         except Exception as e:
                             result = f"Ошибка TTS: {e}"
